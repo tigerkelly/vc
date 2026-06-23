@@ -1531,7 +1531,8 @@ static int cmd_start(void) {
     }
 
 
-    printf("vcd v%s starting  (built %s %s)\n", VCD_VERSION, VC_BUILD_DATE, VC_BUILD_TIME);
+    printf("vcd v%s starting  (built %s %s)  author: %s\n",
+           VCD_VERSION, VC_BUILD_DATE, VC_BUILD_TIME, APP_AUTHOR);
     printf("  Port      : %d\n", cfg.port);
     printf("  Repo root : %s\n", cfg.repoRoot);
     printf("  User DB   : %s\n", cfg.userDb);
@@ -1609,8 +1610,9 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         else if (strcmp(argv[i], "--version")   == 0) {
-            printf("vcd version %s  (built %s %s)\n",
-                   VCD_VERSION, VC_BUILD_DATE, VC_BUILD_TIME); return 0;
+            printf("vcd version %s  (built %s %s)\n"
+                   "Author: %s\n",
+                   VCD_VERSION, VC_BUILD_DATE, VC_BUILD_TIME, APP_AUTHOR); return 0;
         }
         else if (strcmp(argv[i], "--help")      == 0) { usage(argv[0]); return 0; }
         else if (strcmp(argv[i], "--adduser") == 0 && i+1 < argc)

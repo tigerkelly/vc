@@ -1,0 +1,11 @@
+[Unit]
+Description=vc repository daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/pi/bin/vcd --start
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

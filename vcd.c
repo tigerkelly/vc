@@ -1,24 +1,84 @@
-// vcd.c  –  vc daemon server.
-//
-// Build:   gcc -o vcd vcd.c -lcrypt
-// Setup:   sudo vcd --init [--reporoot /path]
-//          sudo vcd --adduser <name>
-//          sudo vcd --start
-//
-// Server layout:
-//   repoRoot/users/<username>/<reponame>/   personal repos
-//   repoRoot/shared/<reponame>/             shared repos
-//
-// User DB (/etc/vcd/users.db):
-//   username:crypt_hash:userdir
-//   kelly:$6$...:users/kelly
-//
-// Config (/etc/vcd/vcd.conf):
-//   port     = 9876
-//   repoRoot = /var/lib/vcd
-//   userDb   = /etc/vcd/users.db
-//   logFile  = /var/log/vcd.log
+/*
+ * vcd.c
+ *
+ * Copyright (c) 2026 Kelly Wiles.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 
+// vcd.c  –  vc daemon (vcd) — remote repository server for the vc
+//           version control system.
+//
+// vcd listens on a TCP port (default 9876) and handles push, pull,
+// clone, and repository management requests from vc clients.
+// It runs as root to bind the port, then drops privileges to the
+// configured runUser (default: nobody) before accepting connections.
+//
+// Build:
+//   gcc -o vcd vcd.c vcSha256.c -lcrypt
+//
+// First-time setup:
+//   sudo vcd --init --reporoot /sas/repos
+//   sudo vcd --adduser <username>
+//   sudo vcd --initrepo users/<username>/<reponame>
+//   sudo vcd --start
+//
+// Admin commands:
+//   sudo vcd --adduser    <name>    Add a user account
+//   sudo vcd --deleteuser <name>    Remove a user account (keeps repo files)
+//   sudo vcd --passwd     <name>    Change a user's password
+//   sudo vcd --listusers            List all users and their repo directories
+//   sudo vcd --initrepo   <path>    Create a new repository
+//   sudo vcd --start                Start the daemon
+//   sudo vcd --version              Print version and build date
+//   sudo vcd --testhash   <pw>      Diagnostic: show SHA-256 and crypt hash
+//   sudo vcd --sethash    <u> <h>   Diagnostic: write SHA-256 hash to users.db
+//
+// Wire protocol (v2.0 — line-based TCP):
+//   C→S  HELLO 2.0
+//   S→C  OK vcd/2.0
+//   C→S  AUTH <username> <sha256hex>
+//   S→C  OK welcome <username>
+//   C→S  PUSH <repopath> <relfile> <size>  → binary data
+//   C→S  PULL <repopath> <relfile>         → S sends OK <size> then data
+//   C→S  LIST <repopath>                   → OK N files\n...\nEND
+//   C→S  LISTREPOS                         → OK\n repo [tag]\n...\nEND
+//   C→S  INITREPO <repopath>              → create repo if not exists
+//   C→S  MOVEREPO <srcpath> <dstpath>     → move repo on server
+//   C→S  QUIT
+//
+// Server repo layout:
+//   repoRoot/users/<username>/<reponame>/   personal repos (owner-only)
+//   repoRoot/shared/<reponame>/             shared repos (allowedUsers)
+//
+// Config file (<repoRoot>/vcd.conf):
+//   port     = 9876
+//   repoRoot = /sas/repos
+//   userDb   = /sas/repos/users.db   (derived from repoRoot if omitted)
+//   logFile  = /sas/repos/vcd.log    (derived from repoRoot if omitted)
+//   runUser  = nobody
+//
+// User DB (<repoRoot>/users.db) — one entry per line:
+//   username:crypt(sha256(password)):userdir
+//   kelly:$6$salt$hash:users/kelly
+//
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -946,7 +1006,9 @@ static int cmd_init(void) {
     chmod(cfg.userDb, 0600);
 
     // Write config file.
-    f = fopen(VCD_CONF_FILE, "w");
+    char confPath[VCD_MAX_PATH];
+    snprintf(confPath, sizeof(confPath), "%s/vcd.conf", cfg.repoRoot);
+    f = fopen(confPath, "w");
     if (f) {
         fprintf(f, "port     = %d\n", cfg.port);
         fprintf(f, "repoRoot = %s\n", cfg.repoRoot);
@@ -954,11 +1016,11 @@ static int cmd_init(void) {
         fprintf(f, "logFile  = %s\n", cfg.logFile);
         fprintf(f, "runUser  = %s\n", cfg.runUser);
         fclose(f);
-        chmod(VCD_CONF_FILE, 0644);
+        chmod(confPath, 0644);
     }
 
     printf("vcd initialised.\n");
-    printf("  Config   : %s  (644)\n", VCD_CONF_FILE);
+    printf("  Config   : %s  (644)\n", confPath);
     printf("  User DB  : %s  (600)\n", cfg.userDb);
     printf("  Repo root: %s\n", cfg.repoRoot);
     printf("    users/ : %s/users/   (personal repos)\n", cfg.repoRoot);
@@ -1018,9 +1080,8 @@ static int cmd_adduser(const char *username) {
     if (cfg.runUser[0] != '\0' && strcmp(cfg.runUser, "root") != 0) {
         struct passwd *rpw = getpwnam(cfg.runUser);
         if (rpw) {
-            snprintf(cmd, sizeof(cmd), "chown -R %s:%s '%s'",
-                     cfg.runUser, cfg.runUser, fullDir);
-            system(cmd);
+            if (chown(fullDir, rpw->pw_uid, rpw->pw_gid) != 0)
+                vlog("WARNING: cannot chown %s: %s\n", fullDir, strerror(errno));
         }
     }
 
@@ -1205,15 +1266,84 @@ static int cmd_initrepo(const char *repoPath) {
     if (cfg.runUser[0] != '\0' && strcmp(cfg.runUser, "root") != 0) {
         struct passwd *rpw = getpwnam(cfg.runUser);
         if (rpw) {
-            char cmd[VCD_MAX_PATH + 32];
-            snprintf(cmd, sizeof(cmd), "chown -R %s:%s '%s'",
-                     cfg.runUser, cfg.runUser, fullPath);
-            system(cmd);
+            if (chown(fullPath, rpw->pw_uid, rpw->pw_gid) != 0)
+                vlog("WARNING: cannot chown %s: %s\n", fullPath, strerror(errno));
         }
     }
 
     printf("\nClient config:\n");
     printf("  vc config --set repo %s\n", repoPath);
+    return 0;
+}
+
+static int cmd_deleteuser(const char *username) {
+    if (!username || !username[0]) {
+        fprintf(stderr, "vcd: --deleteuser requires a username\n");
+        return 1;
+    }
+
+    // Verify user exists.
+    VcdUser user;
+    if (!db_load_user(username, &user)) {
+        fprintf(stderr, "vcd: user '%s' not found in %s\n",
+                username, cfg.userDb);
+        return 1;
+    }
+
+    // Confirm deletion.
+    printf("Delete user '%s'?\n", username);
+    printf("  Repo directory : %s/%s\n", cfg.repoRoot, user.userDir);
+    printf("  WARNING: this removes the user from the database only.\n");
+    printf("           Repo files are NOT deleted — remove manually if needed.\n");
+    printf("  Type 'yes' to confirm: ");
+    fflush(stdout);
+    char ans[16] = "";
+    if (fgets(ans, sizeof(ans), stdin) == NULL || strncmp(ans, "yes", 3) != 0) {
+        printf("Aborted.\n");
+        return 0;
+    }
+
+    // Rewrite users.db omitting this user.
+    char tmp[VCD_MAX_PATH];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", cfg.userDb);
+    FILE *in  = fopen(cfg.userDb, "r");
+    FILE *out = fopen(tmp, "w");
+    if (!in || !out) {
+        fprintf(stderr, "vcd: cannot update userDb: %s\n", strerror(errno));
+        if (in)  fclose(in);
+        if (out) fclose(out);
+        return 1;
+    }
+
+    char line[512];
+    bool removed = false;
+    while (fgets(line, sizeof(line), in)) {
+        char copy[512];
+        snprintf(copy, sizeof(copy), "%s", line);
+        char *tok = strtok(copy, ":");
+        if (tok && strcmp(tok, username) == 0) {
+            removed = true;   // skip this line
+            continue;
+        }
+        fputs(line, out);
+    }
+    fclose(in);
+    fclose(out);
+
+    if (!removed) {
+        remove(tmp);
+        fprintf(stderr, "vcd: user '%s' not found in db\n", username);
+        return 1;
+    }
+
+    if (rename(tmp, cfg.userDb) != 0) {
+        fprintf(stderr, "vcd: rename failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    printf("User '%s' deleted from %s\n", username, cfg.userDb);
+    printf("Repo files remain at: %s/%s\n", cfg.repoRoot, user.userDir);
+    printf("To remove repo files: rm -rf %s/%s\n", cfg.repoRoot, user.userDir);
     return 0;
 }
 
@@ -1261,6 +1391,10 @@ static int load_config(const char *path) {
         }
         return -1; // not found — ok on first run
     }
+
+    // Track which fields were explicitly set in the config file.
+    bool userDbSet = false, logFileSet = false;
+
     char line[512];
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#') continue;
@@ -1275,11 +1409,20 @@ static int load_config(const char *path) {
         while (vl > 0 && (val[vl-1]==' '||val[vl-1]=='\n')) val[--vl]='\0';
         if      (strcmp(key, "port")     == 0) cfg.port = atoi(val);
         else if (strcmp(key, "repoRoot") == 0) snprintf(cfg.repoRoot, sizeof(cfg.repoRoot), "%s", val);
-        else if (strcmp(key, "userDb")   == 0) snprintf(cfg.userDb,   sizeof(cfg.userDb),   "%s", val);
-        else if (strcmp(key, "logFile")  == 0) snprintf(cfg.logFile,  sizeof(cfg.logFile),  "%s", val);
+        else if (strcmp(key, "userDb")   == 0) { snprintf(cfg.userDb, sizeof(cfg.userDb), "%s", val); userDbSet = true; }
+        else if (strcmp(key, "logFile")  == 0) { snprintf(cfg.logFile, sizeof(cfg.logFile), "%s", val); logFileSet = true; }
         else if (strcmp(key, "runUser")  == 0) snprintf(cfg.runUser,  sizeof(cfg.runUser),  "%s", val);
     }
     fclose(f);
+
+    // Derive userDb and logFile from repoRoot if not explicitly set.
+    // This ensures they always live alongside the repo root regardless
+    // of what the default compile-time paths were.
+    if (!userDbSet && cfg.repoRoot[0])
+        snprintf(cfg.userDb,  sizeof(cfg.userDb),  "%s/users.db", cfg.repoRoot);
+    if (!logFileSet && cfg.repoRoot[0])
+        snprintf(cfg.logFile, sizeof(cfg.logFile),  "%s/vcd.log",  cfg.repoRoot);
+
     return 0;
 }
 
@@ -1428,6 +1571,7 @@ static void usage(const char *prog) {
     printf("  %s --start [--port N]          Start the daemon\n", prog);
     printf("  %s --adduser <name>            Add a user\n", prog);
     printf("  %s --passwd  <name>            Change a user's password\n", prog);
+    printf("  %s --deleteuser <name>         Delete a user (keeps repo files)\n", prog);
     printf("  %s --listusers                 List all users\n", prog);
     printf("  %s --testhash <password>       Show SHA-256 and crypt hash (diagnostic)\n", prog);
     printf("  %s --sethash <user> <sha256>  Write SHA-256 hash directly to db (diagnostic)\n", prog);
@@ -1446,7 +1590,10 @@ int main(int argc, char *argv[]) {
     if (argc < 2) { usage(argv[0]); return 0; }
 
     // Load config (non-fatal if missing).
-    if (load_config(VCD_CONF_FILE) == 1) return 1;
+    { char cp[VCD_MAX_PATH];
+      snprintf(cp, sizeof(cp), "%s/vcd.conf", cfg.repoRoot);
+      int lcr = load_config(cp);
+      if (lcr == 1) return 1; }
 
     const char *action = NULL, *actionArg = NULL, *actionArg2 = NULL;
 
@@ -1468,8 +1615,10 @@ int main(int argc, char *argv[]) {
         else if (strcmp(argv[i], "--help")      == 0) { usage(argv[0]); return 0; }
         else if (strcmp(argv[i], "--adduser") == 0 && i+1 < argc)
             { action = "adduser"; actionArg = argv[++i]; }
-        else if (strcmp(argv[i], "--passwd")  == 0 && i+1 < argc)
-            { action = "passwd";  actionArg = argv[++i]; }
+        else if (strcmp(argv[i], "--passwd")     == 0 && i+1 < argc)
+            { action = "passwd";      actionArg = argv[++i]; }
+        else if (strcmp(argv[i], "--deleteuser") == 0 && i+1 < argc)
+            { action = "deleteuser";  actionArg = argv[++i]; }
         else if (strcmp(argv[i], "--testhash") == 0 && i+1 < argc)
             { action = "testhash"; actionArg = argv[++i]; }
         else if (strcmp(argv[i], "--sethash") == 0 && i+2 < argc)
@@ -1495,9 +1644,10 @@ int main(int argc, char *argv[]) {
 
     if      (strcmp(action, "init")      == 0) return cmd_init();
     else if (strcmp(action, "start")     == 0) return cmd_start();
-    else if (strcmp(action, "adduser")   == 0) return cmd_adduser(actionArg);
-    else if (strcmp(action, "passwd")    == 0) return cmd_passwd(actionArg);
-    else if (strcmp(action, "listusers") == 0) return cmd_listusers();
+    else if (strcmp(action, "adduser")    == 0) return cmd_adduser(actionArg);
+    else if (strcmp(action, "passwd")     == 0) return cmd_passwd(actionArg);
+    else if (strcmp(action, "deleteuser") == 0) return cmd_deleteuser(actionArg);
+    else if (strcmp(action, "listusers")  == 0) return cmd_listusers();
     else if (strcmp(action, "testhash")  == 0) {
         if (!actionArg) {
             fprintf(stderr, "Usage: sudo vcd --testhash <password>\n");

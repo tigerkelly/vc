@@ -1,4 +1,27 @@
-
+/*
+ * vcCheckout.c
+ *
+ * Copyright (c) 2026 Kelly Wiles.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -10,6 +33,47 @@
 #include <zip.h>
 
 #include "vc.h"
+#include "vcDiff3.h"
+
+// -------------------------------------------------------------------
+// vcExtractFileFromZipToPath  –  extract a single file from a zip
+// archive to an explicit destination path (not the working directory).
+// Returns true on success.
+// -------------------------------------------------------------------
+static bool vcExtractFileFromZipToPath(const char *zipPath,
+                                        const char *relPath,
+                                        const char *destPath) {
+    int err = 0;
+    zip_t *za = zip_open(zipPath, ZIP_RDONLY, &err);
+    if (!za) return false;
+
+    zip_int64_t idx = zip_name_locate(za, relPath, 0);
+    if (idx < 0) { zip_close(za); return false; }
+
+    zip_stat_t zst;
+    zip_stat_index(za, idx, 0, &zst);
+    zip_file_t *zf = zip_fopen_index(za, idx, 0);
+    if (!zf) { zip_close(za); return false; }
+
+    FILE *out = fopen(destPath, "wb");
+    if (!out) { zip_fclose(zf); zip_close(za); return false; }
+
+    char buf[65536];
+    zip_int64_t remaining = (zip_int64_t)zst.size;
+    while (remaining > 0) {
+        zip_int64_t toRead = remaining < (zip_int64_t)sizeof(buf)
+                             ? remaining : (zip_int64_t)sizeof(buf);
+        zip_int64_t n = zip_fread(zf, buf, (zip_uint64_t)toRead);
+        if (n <= 0) break;
+        fwrite(buf, 1, (size_t)n, out);
+        remaining -= n;
+    }
+    fclose(out);
+    zip_fclose(zf);
+    zip_close(za);
+    return true;
+}
+#include "vcDiff3.h"
 
 // -------------------------------------------------------------------
 // vcCheckout  –  restore files from a commit archive.
@@ -95,13 +159,65 @@ static void refreshIndexEntry(IndexEntry *entries, int count,
 // -------------------------------------------------------------------
 static int checkoutFile(const char *zipPath, const char *relPath,
                          IndexEntry *entries, int count) {
-    if (!vcRestoreFileFromZip(zipPath, relPath)) {
-        fprintf(stderr, "vcCheckout: '%s' not found in archive.\n", relPath);
-        return -1;
+
+    // Check for local modifications before overwriting.
+    char workPath[MAX_DIR_PATH];
+    snprintf(workPath, sizeof(workPath), "%s/%s", vcTopDir, relPath);
+    struct stat wst;
+    int idx = vcIndexFind(entries, count, relPath);
+    bool hasLocalMods = false;
+    if (stat(workPath, &wst) == 0 && count > 0 && idx >= 0) {
+        hasLocalMods = (wst.st_mtime != entries[idx].mtime ||
+                        wst.st_size  != entries[idx].size);
+    }
+
+    if (hasLocalMods) {
+        char tmpTheirs[MAX_DIR_PATH], tmpMerged[MAX_DIR_PATH];
+        snprintf(tmpTheirs, sizeof(tmpTheirs), "/tmp/.vcco_theirs_%d", (int)getpid());
+        snprintf(tmpMerged, sizeof(tmpMerged), "/tmp/.vcco_merged_%d", (int)getpid());
+
+        if (vcExtractFileFromZipToPath(zipPath, relPath, tmpTheirs)) {
+            int mr = vc_merge3(workPath, workPath, tmpTheirs,
+                               tmpMerged, "local", "remote");
+            if (mr == 0 || mr == 1) {
+                FILE *mf = fopen(tmpMerged, "r");
+                FILE *wf = fopen(workPath, "w");
+                if (mf && wf) {
+                    char buf[4096]; size_t n;
+                    while ((n = fread(buf, 1, sizeof(buf), mf)) > 0)
+                        fwrite(buf, 1, n, wf);
+                }
+                if (mf) fclose(mf);
+                if (wf) fclose(wf);
+                if (mr == 0)
+                    printf("  merged    %s\n", relPath);
+                else
+                        printf("  conflict  %s  (conflict markers added — resolve then 'vc add')\n", relPath);
+            } else {
+                char remotePath[MAX_DIR_PATH];
+                snprintf(remotePath, sizeof(remotePath), "%s.remote", workPath);
+                rename(tmpTheirs, remotePath);
+                printf("  conflict  %s  (local kept, remote → %s.remote)\n",
+                       relPath, relPath);
+            }
+            remove(tmpTheirs);
+            remove(tmpMerged);
+        } else {
+            if (!vcRestoreFileFromZip(zipPath, relPath)) {
+                fprintf(stderr, "vcCheckout: '%s' not found in archive.\n", relPath);
+                return -1;
+            }
+            printf("  restored  %s\n", relPath);
+        }
+    } else {
+        if (!vcRestoreFileFromZip(zipPath, relPath)) {
+            fprintf(stderr, "vcCheckout: '%s' not found in archive.\n", relPath);
+            return -1;
+        }
+        printf("  restored  %s\n", relPath);
     }
 
     refreshIndexEntry(entries, count, relPath);
-    printf("  restored  %s\n", relPath);
     return 0;
 }
 
@@ -181,14 +297,95 @@ static int checkoutAll(const char *zipPath,
             if (count > 0 && idx < 0) continue;  // not tracked — skip
             if (count > 0 && idx < 4096 && restored[idx]) continue; // already restored
 
-            zip_close(za);
-            if (vcRestoreFileFromZip(zpath, nameCopy)) {
-                refreshIndexEntry(entries, count, nameCopy);
-                printf("  restored  %s\n", nameCopy);
-                if (count > 0 && idx >= 0 && idx < 4096)
-                    restored[idx] = true;
-                totalRestored++;
+            // Check if working file has local modifications before overwriting.
+            char workPath[MAX_DIR_PATH];
+            snprintf(workPath, sizeof(workPath), "%s/%s", vcTopDir, nameCopy);
+            struct stat wst;
+            bool hasLocalMods = false;
+            if (stat(workPath, &wst) == 0 && count > 0 && idx >= 0) {
+                // Compare working file checksum against index checksum.
+                hasLocalMods = (wst.st_mtime != entries[idx].mtime ||
+                                wst.st_size  != entries[idx].size);
             }
+
+            zip_close(za);
+
+            if (hasLocalMods) {
+                // Local file is modified — attempt 3-way merge.
+                // Extract incoming version to a temp file as "theirs".
+                char tmpTheirs[MAX_DIR_PATH], tmpBase[MAX_DIR_PATH];
+                char tmpMerged[MAX_DIR_PATH];
+                snprintf(tmpTheirs, sizeof(tmpTheirs),
+                         "/tmp/.vcco_theirs_%d", (int)getpid());
+                snprintf(tmpBase,   sizeof(tmpBase),
+                         "/tmp/.vcco_base_%d",   (int)getpid());
+                snprintf(tmpMerged, sizeof(tmpMerged),
+                         "/tmp/.vcco_merged_%d", (int)getpid());
+
+                // Write incoming (zip) version to tmpTheirs.
+                if (vcExtractFileFromZipToPath(zpath, nameCopy, tmpTheirs)) {
+                    // Use the index version as base (last committed local).
+                    // For simplicity, use the current working file as base
+                    // since the index checksum matched it at last add.
+                    // theirs = incoming, ours = working, base = working (before edits)
+                    // Better: extract base from previous zip if available.
+                    int mr = vc_merge3(workPath, workPath, tmpTheirs,
+                                       tmpMerged, "local", "remote");
+                    if (mr == 0) {
+                        // Clean merge — copy merged result to working file.
+                        FILE *mf = fopen(tmpMerged, "r");
+                        FILE *wf = fopen(workPath, "w");
+                        if (mf && wf) {
+                            char buf[4096]; size_t n2;
+                            while ((n2 = fread(buf, 1, sizeof(buf), mf)) > 0)
+                                fwrite(buf, 1, n2, wf);
+                        }
+                        if (mf) fclose(mf);
+                        if (wf) fclose(wf);
+                        refreshIndexEntry(entries, count, nameCopy);
+                        printf("  merged    %s\n", nameCopy);
+                    } else if (mr == 1) {
+                        // Conflicts — copy conflict-marked file to working file.
+                        FILE *mf = fopen(tmpMerged, "r");
+                        FILE *wf = fopen(workPath, "w");
+                        if (mf && wf) {
+                            char buf[4096]; size_t n2;
+                            while ((n2 = fread(buf, 1, sizeof(buf), mf)) > 0)
+                                fwrite(buf, 1, n2, wf);
+                        }
+                        if (mf) fclose(mf);
+                        if (wf) fclose(wf);
+                        printf("  conflict  %s  (conflict markers added — resolve then 'vc add')\n", nameCopy);
+                    } else {
+                        // Merge error — keep local, save incoming as .remote
+                        char remotePath[MAX_DIR_PATH];
+                        snprintf(remotePath, sizeof(remotePath),
+                                 "%s.remote", workPath);
+                        rename(tmpTheirs, remotePath);
+                        printf("  conflict  %s  (local kept, remote → %s.remote)\n", nameCopy, nameCopy);
+                    }
+                    remove(tmpTheirs);
+                    remove(tmpBase);
+                    remove(tmpMerged);
+                } else {
+                    // Could not extract — restore directly.
+                    if (vcRestoreFileFromZip(zpath, nameCopy)) {
+                        refreshIndexEntry(entries, count, nameCopy);
+                        printf("  restored  %s\n", nameCopy);
+                    }
+                }
+            } else {
+                // No local modifications — restore directly.
+                if (vcRestoreFileFromZip(zpath, nameCopy)) {
+                    refreshIndexEntry(entries, count, nameCopy);
+                    printf("  restored  %s\n", nameCopy);
+                }
+            }
+
+            if (count > 0 && idx >= 0 && idx < 4096)
+                restored[idx] = true;
+            totalRestored++;
+
             za = zip_open(zpath, ZIP_RDONLY, &err);
             if (za == NULL) break;
         }

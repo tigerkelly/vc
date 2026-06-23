@@ -4,7 +4,7 @@
 // Single source of truth for vc, vcd, and vcg version numbers.
 // Bump this when releasing a new version.
 
-#define APP_VERSION     "1.0"
+#define APP_VERSION     "1.0.3"
 
 // Build date/time — set by the compiler at compile time.
 #define VC_BUILD_DATE   __DATE__

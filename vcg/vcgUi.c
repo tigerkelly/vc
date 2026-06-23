@@ -1,3 +1,28 @@
+/*
+ * vcgUi.c
+ *
+ * Copyright (c) 2026 Kelly Wiles.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #include "vcg.h"
 #define VCG_FILE_VER_vcgUi 1
 
@@ -155,10 +180,25 @@ GtkWidget *buildUi(VcG *app)
 {
     app->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(app->window), "vcg — vc Version Control");
-    gtk_window_set_default_size(GTK_WINDOW(app->window),
-                                app->cfg.winWidth, app->cfg.winHeight);
+
+    /* Clamp window size to screen dimensions so it's never larger than
+     * the display — prevents the window appearing but being off-screen. */
+    GdkScreen *screen = gdk_screen_get_default();
+    gint screenW = gdk_screen_get_width(screen);
+    gint screenH = gdk_screen_get_height(screen);
+    gint w = app->cfg.winWidth  > 0 ? app->cfg.winWidth  : 1400;
+    gint h = app->cfg.winHeight > 0 ? app->cfg.winHeight : 800;
+    if (w > screenW) w = screenW;
+    if (h > screenH) h = screenH;
+
+    gtk_window_set_default_size(GTK_WINDOW(app->window), w, h);
+
+    /* Centre the window unless a saved position is available. */
     if (app->cfg.winX >= 0 && app->cfg.winY >= 0)
         gtk_window_move(GTK_WINDOW(app->window), app->cfg.winX, app->cfg.winY);
+    else
+        gtk_window_set_position(GTK_WINDOW(app->window), GTK_WIN_POS_CENTER);
+
     gtk_window_set_resizable(GTK_WINDOW(app->window), TRUE);
     g_signal_connect(app->window, "delete-event", G_CALLBACK(onWindowDelete), app);
     g_signal_connect(app->window, "destroy",      G_CALLBACK(gtk_main_quit),  NULL);

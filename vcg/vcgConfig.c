@@ -1,3 +1,28 @@
+/*
+ * vcgConfig.c
+ *
+ * Copyright (c) 2026 Kelly Wiles.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #include "vcg.h"
 #define VCG_FILE_VER_vcgConfig 1
 
@@ -9,8 +34,8 @@ gchar *configFilePath(void)
 /* ---- Apply hard-coded defaults ---- */
 void configDefaults(VcConfig *cfg)
 {
-    cfg->winWidth        = 1400;
-    cfg->winHeight       = 800;
+    cfg->winWidth        = 1200;
+    cfg->winHeight       = 750;
     cfg->pane1Pos        = 185;
     cfg->pane2Pos        = 310;
     cfg->winX            = -1;
@@ -132,17 +157,17 @@ gchar *configBuildCss(const VcConfig *cfg)
 {
     return g_strdup_printf(
         "window { background-color:#%s; color:#%s; }"
-        "button { background:linear-gradient(to bottom,#313244,#2a2a3d);"
-        "  color:#%s; border:1px solid #45475a; border-radius:5px;"
+        "button { background:#313244; color:#%s;"
+        "  border:1px solid #45475a; border-radius:5px;"
         "  padding:4px 10px; font-size:%dpt; }"
         "button:hover  { background:#45475a; }"
         "button:active { background:#585b70; }"
-        "button.action  { background:linear-gradient(to bottom,#1e6bc4,#1558a8); }"
-        "button.action:hover  { background:#1e6bc4; }"
-        "button.danger  { background:linear-gradient(to bottom,#a6222a,#891c23); }"
-        "button.danger:hover  { background:#a6222a; }"
-        "button.success { background:linear-gradient(to bottom,#1e8a3c,#166b2e); }"
-        "button.success:hover { background:#1e8a3c; }"
+        "button.action  { background:#1e6bc4; color:#ffffff; }"
+        "button.action:hover  { background:#2579d8; }"
+        "button.danger  { background:#a6222a; color:#ffffff; }"
+        "button.danger:hover  { background:#c0272f; }"
+        "button.success { background:#1e8a3c; color:#ffffff; }"
+        "button.success:hover { background:#22a046; }"
         "entry { background-color:#%s; color:#%s;"
         "  border:1px solid #45475a; border-radius:4px; padding:3px 6px;"
         "  font-size:%dpt; }"
@@ -167,12 +192,6 @@ gchar *configBuildCss(const VcConfig *cfg)
         "separator { background-color:#313244; min-height:1px; }"
         "menu { background-color:#%s; color:#%s; }"
         "menuitem:hover { background-color:#313244; }"
-        /* Theme the combo popup list rows to match the dark theme.
-         * max-height is not valid in GTK3 CSS — row count is limited
-         * programmatically in makeCombo() via notify::popup-shown. */
-        "window.popup .view { background-color:#1e1e2e; color:#cdd6f4; }"
-        "window.popup .view:selected { background-color:#313244; }"
-        /* Sidebar file list — rows inherit the dark sidebar background */
         "list { background-color:#181825; }"
         "list row { background-color:#181825; color:#cdd6f4; padding:1px 4px; }"
         "list row:hover { background-color:#313244; }"

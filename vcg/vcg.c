@@ -51,13 +51,44 @@
 
 int main(int argc, char *argv[])
 {
+    /* Check for --version before touching GTK */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--version") == 0) {
+            printf("vcg version %s  (built %s %s)\nAuthor: %s\n",
+                   VCG_VERSION, VC_BUILD_DATE, VC_BUILD_TIME, APP_AUTHOR);
+            return 0;
+        }
+    }
+
+#ifndef _WIN32
+    /* On Linux/macOS, check DISPLAY (X11) or WAYLAND_DISPLAY before
+     * calling gtk_init — otherwise gtk_init blocks or crashes with
+     * no error message when run over SSH without X forwarding. */
+    if (!getenv("DISPLAY") && !getenv("WAYLAND_DISPLAY")) {
+        fprintf(stderr,
+            "vcg: no display found.\n"
+            "  If running over SSH, enable X forwarding:  ssh -X user@host\n"
+            "  Or set DISPLAY:                            export DISPLAY=:0\n");
+        return 1;
+    }
+#endif
+
     gtk_init(&argc, &argv);
 
+    /* Check for --debug flag */
+    gboolean debugMode = FALSE;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--debug") == 0) debugMode = TRUE;
+    }
+
+    if (debugMode) fprintf(stderr, "vcg: loading config...\n");
     VcG app;
     memset(&app, 0, sizeof(app));
 
     /* Load persistent config (fills defaults, then overlays saved values) */
     configLoad(&app.cfg);
+
+    if (debugMode) fprintf(stderr, "vcg: config loaded, building UI...\n");
 
     /* Working directory: last saved or cwd */
     if (app.cfg.lastWorkDir[0])
@@ -65,12 +96,18 @@ int main(int argc, char *argv[])
     else
         app.workDir = g_strdup(g_get_current_dir());
 
+    if (debugMode) fprintf(stderr, "vcg: workDir=%s\n", app.workDir);
+
     buildUi(&app);
+
+    if (debugMode) fprintf(stderr, "vcg: UI built, showing window...\n");
 
     /* Restore working directory into the entry */
     gtk_entry_set_text(GTK_ENTRY(app.dirEntry), app.workDir);
 
     gtk_widget_show_all(app.window);
+
+    if (debugMode) fprintf(stderr, "vcg: window shown, refreshing tree...\n");
 
     setStatus(&app, "Ready.  Select a working directory, then use the tree and buttons.");
     appendOutput(&app,
@@ -88,6 +125,16 @@ int main(int argc, char *argv[])
 
     refreshTree(&app);
 
+    if (debugMode) fprintf(stderr, "vcg: entering main loop...\n");
+
+    /* Force the window to the foreground and flush all pending GTK events
+     * before entering the main loop — prevents the window appearing blank
+     * or not showing at all on some display configurations. */
+    gtk_window_present(GTK_WINDOW(app.window));
+    while (gtk_events_pending())
+        gtk_main_iteration();
+
+    if (debugMode) fprintf(stderr, "vcg: gtk_main() start\n");
     gtk_main();
     g_free(app.workDir);
     return 0;

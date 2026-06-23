@@ -380,6 +380,21 @@ Username              Repo directory
 sudo vcd --passwd kelly
 ```
 
+#### Delete a user
+
+```bash
+sudo vcd --deleteuser kelly
+```
+
+Removes the user from `users.db`. Prompts `Type 'yes' to confirm`.
+Repo files in `repoRoot/users/kelly/` are **not** deleted — remove
+them manually if needed:
+
+```bash
+sudo vcd --deleteuser kelly
+sudo rm -rf /sas/repos/users/kelly
+```
+
 #### User database format
 
 Located at `<repoRoot>/users.db`. Plain text, one user per line:
@@ -710,6 +725,22 @@ vc checkout --zip <zipfile>    Restore project from a specific zip
 
 `checkout --all` scans all zips newest-first so each file gets its
 most recent committed version, regardless of which commit it came from.
+
+**Conflict handling:**
+
+Before overwriting a working file, `vc checkout` checks whether it has
+been modified since the last `vc add`. If it has, a 3-way merge is
+attempted automatically:
+
+| Situation | Output |
+|---|---|
+| File unchanged locally | `restored src/main.c` |
+| Changed in different places | `merged src/main.c` — staged automatically |
+| Changed in same place | `conflict src/main.c` — conflict markers written |
+| Binary / merge error | Local kept, remote saved as `src/main.c.remote` |
+
+Resolve conflicts by editing the file, removing the markers, then
+`vc add` and `vc commit`.
 
 ---
 

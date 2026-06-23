@@ -178,6 +178,7 @@ on the first push.
 ```bash
 sudo vcd --listusers          # list all users and their repo directories
 sudo vcd --passwd kelly       # change a user's password
+sudo vcd --deleteuser kelly   # remove user (keeps repo files on disk)
 sudo vcd --version            # print version and build date
 ```
 
@@ -245,6 +246,11 @@ Remote repo  : users/kelly/myproject
 > **Tip:** If you want to work locally only (no remote), just press
 > Enter at the `Remote host` prompt.
 
+> **Conflict handling:** `vc checkout` detects local modifications before
+> overwriting. If a file was changed locally and on the remote, a 3-way
+> merge is attempted automatically. Conflicts get markers — resolve them
+> then `vc add` and `vc commit`.
+
 ### Check status
 
 ```bash
@@ -305,6 +311,9 @@ The typical day-to-day cycle:
 ```bash
 # Pull latest changes from server (if working on multiple machines)
 vc pull
+
+# Apply pulled commits to working files
+vc checkout
 
 # Edit files...
 
@@ -624,6 +633,10 @@ terminal for day-to-day work.
 | Move repo | `vc moverepo <src> <dst>` |
 | Show version | `vc version` |
 | Get help | `vc help` |
+| Add user (server) | `sudo vcd --adduser <name>` |
+| Delete user (server) | `sudo vcd --deleteuser <name>` |
+| Change password (server) | `sudo vcd --passwd <name>` |
+| List users (server) | `sudo vcd --listusers` |
 
 ---
 
